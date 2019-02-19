@@ -523,8 +523,11 @@ class BlockSender implements java.io.Closeable {
     int dataLen = (int) Math.min(endOffset - offset,
                              (chunkSize * (long) maxChunks));
     
+    // 数据包中包含多少个校验块
     int numChunks = numberOfChunks(dataLen); // Number of chunks be sent in the packet
+    // 校验数据长度
     int checksumDataLen = numChunks * checksumSize;
+    // 数据包长度
     int packetLen = dataLen + checksumDataLen + 4;
     boolean lastDataPacket = offset + dataLen == endOffset && dataLen > 0;
 
@@ -538,16 +541,19 @@ class BlockSender implements java.io.Closeable {
     // C = checksums
     // D? = data, if transferTo is false.
     
+    // 将数据包头域写入缓存中
     int headerLen = writePacketHeader(pkt, dataLen, packetLen);
     
     // Per above, the header doesn't start at the beginning of the
     // buffer
+   // 校验包头域在缓存中的位置
     int headerOff = pkt.position() - headerLen;
     
     int checksumOff = pkt.position();
     byte[] buf = pkt.array();
     
     if (checksumSize > 0 && checksumIn != null) {
+      // 将校验数据写入缓存中
       readChecksum(buf, checksumOff, checksumDataLen);
 
       // write in progress that we need to use to get last checksum
@@ -565,6 +571,7 @@ class BlockSender implements java.io.Closeable {
     if (!transferTo) { // normal transfer
       IOUtils.readFully(blockIn, buf, dataOff, dataLen);
 
+      // 确认校验和是否正确
       if (verifyChecksum) {
         verifyChecksum(buf, dataOff, dataLen, numChunks, checksumOff);
       }
@@ -574,6 +581,7 @@ class BlockSender implements java.io.Closeable {
       if (transferTo) {
         SocketOutputStream sockOut = (SocketOutputStream)out;
         // First write header and checksums
+        // 将缓存中的所有数据（包括头域、校验和以及实际数据）写入输出流中
         sockOut.write(buf, headerOff, dataOff - headerOff);
         
         // no need to flush since we know out is not a buffered stream
@@ -620,6 +628,7 @@ class BlockSender implements java.io.Closeable {
     }
 
     if (throttler != null) { // rebalancing so throttle
+      // 调整节流器
       throttler.throttle(packetLen);
     }
 
