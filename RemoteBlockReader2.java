@@ -199,9 +199,11 @@ public class RemoteBlockReader2  implements BlockReader {
   }
 
   private void readNextPacket() throws IOException {
-    //Read packet headers.
+    // Read packet headers.
+    // 从IO流中获取一个新的数据包
     packetReceiver.receiveNextPacket(in);
 
+    // 将数据包头读入 curHeader 变量中，将数据包数据写入 curDataSlice 变量中
     PacketHeader curHeader = packetReceiver.getHeader();
     curDataSlice = packetReceiver.getDataSlice();
     assert curDataSlice.capacity() == curHeader.getDataLen();
@@ -211,11 +213,13 @@ public class RemoteBlockReader2  implements BlockReader {
     }
 
     // Sanity check the lengths
+    // 检查头域中的长度
     if (!curHeader.sanityCheck(lastSeqNo)) {
          throw new IOException("BlockReader: error in packet header " +
                                curHeader);
     }
     
+    // 检查数据、校验和是否匹配
     if (curHeader.getDataLen() > 0) {
       int chunks = 1 + (curHeader.getDataLen() - 1) / bytesPerChecksum;
       int checksumsLen = chunks * checksumSize;
@@ -246,6 +250,7 @@ public class RemoteBlockReader2  implements BlockReader {
 
     // If we've now satisfied the whole client read, read one last packet
     // header, which should be empty
+    // 如果完成了客户端的整个读取操作，读取最后一个空的数据包，因为数据块的最后一个数据包为空的标识数据包
     if (bytesNeededToFinish <= 0) {
       readTrailingEmptyPacket();
       if (verifyChecksum) {
