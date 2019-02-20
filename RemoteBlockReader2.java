@@ -177,6 +177,7 @@ public class RemoteBlockReader2  implements BlockReader {
       TraceScope scope = Trace.startSpan(
           "RemoteBlockReader2#readNextPacket(" + blockId + ")", Sampler.NEVER);
       try {
+        // 读取下一个数据包，将数据包中的数据部分存入curDataSlice变量中
         readNextPacket();
       } finally {
         scope.close();
@@ -187,6 +188,7 @@ public class RemoteBlockReader2  implements BlockReader {
       return -1;
     }
 
+    // 将curDataSlice中的数据写入buf中
     int nRead = Math.min(curDataSlice.remaining(), buf.remaining());
     ByteBuffer writeSlice = curDataSlice.duplicate();
     writeSlice.limit(writeSlice.position() + nRead);
