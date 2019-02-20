@@ -442,9 +442,11 @@ class BlockReaderLocal implements BlockReader {
    */
   private synchronized int readWithoutBounceBuffer(ByteBuffer buf)
       throws IOException {
-    freeDataBufIfExists();
-    freeChecksumBufIfExists();
+    freeDataBufIfExists();  // 释放 dataBuffer
+    freeChecksumBufIfExists();  // 释放checksumBuffer
     int total = 0;
+    
+    // 直接从输入流中将数据读取到buf
     while (buf.hasRemaining()) {
       int nRead = dataIn.read(buf, dataPos);
       if (nRead <= 0) break;
