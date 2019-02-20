@@ -189,19 +189,25 @@ public class DFSInputStream extends FSInputStream
 
   /**
    * Grab the open-file info from namenode
+   * 用于从Namenode获取文件对应的数据块位置信息，并将信息保存至DFSInputStream.locatedBlocks字段中
    * @param refreshLocatedBlocks whether to re-fetch locatedblocks
    */
   void openInfo(boolean refreshLocatedBlocks) throws IOException {
     final DfsClientConf conf = dfsClient.getConf();
     synchronized(infoLock) {
+      // 获取文件对应的所有数据块的位置信息  
       lastBlockBeingWrittenLength =
           fetchLocatedBlocksAndGetLastBlockLength(refreshLocatedBlocks);
+      // 初始化重试次数
       int retriesForLastBlockLength = conf.getRetryTimesForGetLastBlockLength();
+        
+      // 如果出现无法获取数据块长度的情况，则重试
       while (retriesForLastBlockLength > 0) {
         // Getting last block length as -1 is a special case. When cluster
         // restarts, DNs may not report immediately. At this time partial block
         // locations will not be available with NN for getting the length. Lets
         // retry for 3 times to get the length.
+        // 集群重启，有些DN还没向NN进行完整的数据块汇报，也就无法从NN获取文件对的数据块的位置信息，需要进行重试
         if (lastBlockBeingWrittenLength == -1) {
           DFSClient.LOG.warn("Last block locations not available. "
               + "Datanodes might not have reported blocks completely."
@@ -231,10 +237,16 @@ public class DFSInputStream extends FSInputStream
     }
   }
 
+  /** 
+   * 获取文件对应的所有数据块的位置信息，然后更新当前文件的最后一个数据块的长度
+   * 由于文件的最后一个数据块可能处于构建状态（正在被写入）
+   * 那么Namenode命名空间中保存的数据块长度就有可能小于Datanode实际存储数据块的长度 
+   */                
   private long fetchLocatedBlocksAndGetLastBlockLength(boolean refresh)
       throws IOException {
     LocatedBlocks newInfo = locatedBlocks;
     if (locatedBlocks == null || refresh) {
+      // 通过clientProtocol获取文件对应的所有数据块的位置信息
       newInfo = dfsClient.getLocatedBlocks(src, 0);
     }
     DFSClient.LOG.debug("newInfo = {}", newInfo);
@@ -242,29 +254,36 @@ public class DFSInputStream extends FSInputStream
       throw new IOException("Cannot open filename " + src);
     }
 
+    // 比较DFSClient.locatedBlocks属性以及新获取的位置信息
     if (locatedBlocks != null) {
       Iterator<LocatedBlock> oldIter = locatedBlocks.getLocatedBlocks().iterator();
       Iterator<LocatedBlock> newIter = newInfo.getLocatedBlocks().iterator();
       while (oldIter.hasNext() && newIter.hasNext()) {
         if (!oldIter.next().getBlock().equals(newIter.next().getBlock())) {
+            // 如果数据块位置信息不匹配，则抛出异常，这里最终比对的是Block（blockId）和 poolId 的信息
           throw new IOException("Blocklist for " + src + " has changed!");
         }
       }
     }
+    // 更新 locatedBlocks 字段
     locatedBlocks = newInfo;
     long lastBlockBeingWrittenLength = 0;
     if (!locatedBlocks.isLastBlockComplete()) {
+      // 获取最后一个数据块的位置信息
       final LocatedBlock last = locatedBlocks.getLastLocatedBlock();
       if (last != null) {
         if (last.getLocations().length == 0) {
           if (last.getBlockSize() == 0) {
             // if the length is zero, then no data has been written to
             // datanode. So no need to wait for the locations.
+            // 如果最后一个数据块的长度为0，则不用更新，直接返回
             return 0;
           }
           return -1;
         }
+        // 通过clientDatanodeProtocol获取数据块在Datanode上的长度
         final long len = readBlockLength(last);
+        // 更新DFSClient.locatedBlocks保存的最后一个数据块的长度
         last.getBlock().setNumBytes(len);
         lastBlockBeingWrittenLength = len;
       }
