@@ -550,7 +550,7 @@ public class DFSInputStream extends FSInputStream
    */
   private synchronized DatanodeInfo blockSeekTo(long target)
       throws IOException {
-    if (target >= getFileLength()) {
+    if (target >= getFileLength()) { // 如果读取位置超过HDFS文件的长度，则抛出异常
       throw new IOException("Attempted to read past end of file");
     }
 
@@ -568,26 +568,28 @@ public class DFSInputStream extends FSInputStream
 
     while (true) {
       //
-      // Compute desired block
+      // Compute desired block 获取期望得到的数据块位置信息
       //
       LocatedBlock targetBlock = getBlockAt(target);
 
-      // update current position
+      // update current position 更新当前位置信息
       this.pos = target;
       this.blockEnd = targetBlock.getStartOffset() +
             targetBlock.getBlockSize() - 1;
       this.currentLocatedBlock = targetBlock;
 
+      //  获取当前target在新数据块中的偏移量
       long offsetIntoBlock = target - targetBlock.getStartOffset();
 
       DNAddrPair retval = chooseDataNode(targetBlock, null);
-      chosenNode = retval.info;
-      InetSocketAddress targetAddr = retval.addr;
+      chosenNode = retval.info; // 选中的 Datanode
+      InetSocketAddress targetAddr = retval.addr; // 选中的 Datanode 的地址
       StorageType storageType = retval.storageType;
       // Latest block if refreshed by chooseDatanode()
       targetBlock = retval.block;
 
       try {
+        // 通过BlockReaderFactory获取blockReader对象
         blockReader = getBlockReader(targetBlock, offsetIntoBlock,
             targetBlock.getBlockSize() - offsetIntoBlock, targetAddr,
             storageType, chosenNode);
@@ -614,6 +616,7 @@ public class DFSInputStream extends FSInputStream
               "add to deadNodes and continue. ", targetAddr,
               targetBlock.getBlock(), ex);
           // Put chosen node into dead list, continue
+          // BlockReader 构建失败，将chosenNode 放入黑名单
           addToDeadNodes(chosenNode);
         }
       }
@@ -701,6 +704,7 @@ public class DFSInputStream extends FSInputStream
   /* This is a used by regular read() and handles ChecksumExceptions.
    * name readBuffer() is chosen to imply similarity to readBuffer() in
    * ChecksumFileSystem
+   * 读入数据，委托BlockReader对象实现，并在发生异常时进行重试
    */
   private synchronized int readBuffer(ReaderStrategy reader, int len,
                                       CorruptedBlocks corruptedBlocks)
@@ -718,6 +722,7 @@ public class DFSInputStream extends FSInputStream
     while (true) {
       // retry as many times as seekToNewSource allows.
       try {
+        // 读取数据
         return reader.readFromBlock(blockReader, len);
       } catch (ChecksumException ce) {
         DFSClient.LOG.warn("Found Checksum error for "
@@ -726,6 +731,7 @@ public class DFSInputStream extends FSInputStream
         ioe = ce;
         retryCurrentNode = false;
         // we want to remember which block replicas we have tried
+        // 将损坏的数据块加入corruptedBlocks中，并向Namenode汇报
         corruptedBlocks.addCorruptedBlock(getCurrentBlock(), currentNode);
       } catch (IOException e) {
         if (!retryCurrentNode) {
@@ -741,8 +747,10 @@ public class DFSInputStream extends FSInputStream
          * result in application level failures (e.g. Datanode could have
          * closed the connection because the client is idle for too long).
          */
+        // 重试当前节点（普通IO异常，比如客户端和数据节点之间的连接关闭了）
         sourceFound = seekToBlockSource(pos);
       } else {
+        // 当前Datanode重试失败，则将当前节点加入到黑名单中，然后重新选择一个Datanode读取数据  
         addToDeadNodes(currentNode);
         sourceFound = seekToNewSource(pos);
       }
@@ -755,6 +763,8 @@ public class DFSInputStream extends FSInputStream
 
   protected synchronized int readWithStrategy(ReaderStrategy strategy)
       throws IOException {
+      
+    // 检查dfsClient是否已经关闭，如果关闭了，则抛出异常  
     dfsClient.checkOpen();
     if (closed.get()) {
       throw new IOException("Stream closed");
@@ -763,15 +773,19 @@ public class DFSInputStream extends FSInputStream
     int len = strategy.getTargetLength();
     CorruptedBlocks corruptedBlocks = new CorruptedBlocks();
     failures = 0;
-    if (pos < getFileLength()) {
-      int retries = 2;
+    if (pos < getFileLength()) {  // 读取位置再文件范围内
+      int retries = 2;            // 异常重试次数
       while (retries > 0) {
         try {
           // currentNode can be left as null if previous read had a checksum
           // error on the same block. See HDFS-3067
+          // pos超过数据块边界，需要从新的数据块开始读取数据
           if (pos > blockEnd || currentNode == null) {
+            // 获取保存这个数据块的一个数据节点
             currentNode = blockSeekTo(pos);
           }
+          
+          // 计算这次读取的长度  
           int realLen = (int) Math.min(len, (blockEnd - pos + 1L));
           synchronized(infoLock) {
             if (locatedBlocks.isLastBlockComplete()) {
@@ -779,9 +793,12 @@ public class DFSInputStream extends FSInputStream
                   locatedBlocks.getFileLength() - pos);
             }
           }
+            
+          // 调用readBuffer()方法读取数据
           int result = readBuffer(strategy, realLen, corruptedBlocks);
 
           if (result >= 0) {
+            // pos移位
             pos += result;
           } else {
             // got a EOS from reader though we expect more data on it.
@@ -797,6 +814,7 @@ public class DFSInputStream extends FSInputStream
           }
           blockEnd = -1;
           if (currentNode != null) {
+            // 将当前失败的节点加入黑名单中
             addToDeadNodes(currentNode);
           }
           if (--retries == 0) {
@@ -805,6 +823,7 @@ public class DFSInputStream extends FSInputStream
         } finally {
           // Check if need to report block replicas corruption either read
           // was successful or ChecksumException occurred.
+          // 检查是否需要向Namenode汇报损坏的数据块
           reportCheckSumFailure(corruptedBlocks,
               getCurrentBlockLocationsLength(), false);
         }
