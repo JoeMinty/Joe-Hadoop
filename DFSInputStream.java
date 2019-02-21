@@ -422,6 +422,7 @@ public class DFSInputStream extends FSInputStream
    * Get block at the specified position.
    * Fetch it from the namenode if not cached.
    *
+   * 获取数据块具体的位置
    * @param offset block corresponding to this offset in file is returned
    * @return located block
    * @throws IOException
@@ -442,10 +443,12 @@ public class DFSInputStream extends FSInputStream
         // offset to the portion of the last block,
         // which is not known to the name-node yet;
         // getting the last block
+        // 如果起始位置超过了文件长度，则获取最后一个数据块的位置
         blk = locatedBlocks.getLastLocatedBlock();
       }
       else {
         // search cached blocks first
+        // 首先从缓存的块中寻找对应的数据块位置
         blk = fetchBlockAt(offset, 0, true);
       }
       return blk;
@@ -462,11 +465,11 @@ public class DFSInputStream extends FSInputStream
       throws IOException {
     synchronized(infoLock) {
       int targetBlockIdx = locatedBlocks.findBlock(offset);
-      if (targetBlockIdx < 0) { // block is not cached
+      if (targetBlockIdx < 0) { // block is not cached  不在缓存中
         targetBlockIdx = LocatedBlocks.getInsertIndex(targetBlockIdx);
         useCache = false;
       }
-      if (!useCache) { // fetch blocks
+      if (!useCache) { // fetch blocks  通过ClientProtocol发送获取对应数据块的请求
         final LocatedBlocks newBlocks = (length == 0)
             ? dfsClient.getLocatedBlocks(src, offset)
             : dfsClient.getLocatedBlocks(src, offset, length);
