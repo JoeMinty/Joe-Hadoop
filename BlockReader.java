@@ -27,6 +27,7 @@ import org.apache.hadoop.hdfs.shortcircuit.ClientMmap;
 /**
  * A BlockReader is responsible for reading a single block
  * from a single datanode.
+ * 用来从一个数据节点读取一个数据块
  */
 public interface BlockReader extends ByteBufferReadable {
   
