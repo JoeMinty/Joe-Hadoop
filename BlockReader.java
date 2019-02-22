@@ -40,11 +40,13 @@ public interface BlockReader extends ByteBufferReadable {
    * the checksum.
    * Note: this must return -1 on EOF, even in the case of a 0-byte read.
    * See HDFS-5762 for details.
+   * 将数据读取到byte[]数组中
    */
   int read(byte[] buf, int off, int len) throws IOException;
 
   /**
    * Skip the given number of bytes
+   * 从数据块中跳过若干字节，当前输入流可读取的字节数
    */
   long skip(long n) throws IOException;
 
@@ -53,6 +55,7 @@ public interface BlockReader extends ByteBufferReadable {
    * (or skipped over) from this input stream without performing
    * network I/O.
    * This may return more than what is actually present in the block.
+   * 当不用进行一次新的网络IO时
    */
   int available() throws IOException;
 
@@ -66,6 +69,7 @@ public interface BlockReader extends ByteBufferReadable {
   /**
    * Read exactly the given amount of data, throwing an exception
    * if EOF is reached before that amount
+   * 将数据读取到byte[]数组中
    */
   void readFully(byte[] buf, int readOffset, int amtToRead) throws IOException;
 
@@ -76,17 +80,20 @@ public interface BlockReader extends ByteBufferReadable {
    * read the data if it is available. In other words, if this call
    * does not throw an exception, then either the buffer has been
    * filled or the next call will return EOF.
+   * 将数据读取到byte[]数组中
    */
   int readAll(byte[] buf, int offset, int len) throws IOException;
 
   /**
    * @return              true only if this is a local read.
+   * 是否是一个本地读，即客户端是否和数据块在同一台机器上
    */
   boolean isLocal();
   
   /**
    * @return              true only if this is a short-circuit read.
    *                      All short-circuit reads are also local.
+   * 是否是一个短路读取，短路读取必然是本地读
    */
   boolean isShortCircuit();
 
@@ -96,6 +103,7 @@ public interface BlockReader extends ByteBufferReadable {
    * @param opts          The read options to use.
    * @return              The ClientMmap object, or null if mmap is not
    *                      supported.
+   * 为当前读取获得一个内存映射区域（参考零拷贝）
    */
   ClientMmap getClientMmap(EnumSet<ReadOption> opts);
 }
