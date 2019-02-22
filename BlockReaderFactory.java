@@ -340,6 +340,7 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
       }
     }
     if (conf.domainSocketDataTraffic) {
+      // 使用 Domain Socket 作为底层 IO 流，构造 RemoteBlockerReader2 对象读取数据块 
       reader = getRemoteBlockReaderFromDomain();
       if (reader != null) {
         if (LOG.isTraceEnabled()) {
@@ -352,6 +353,7 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
     Preconditions.checkState(!DFSInputStream.tcpReadsDisabledForTesting,
         "TCP reads were disabled for testing, but we failed to " +
         "do a non-TCP read.");
+    // 使用 Tcp Socket 作为底层 IO 流，构造 RemoteBlockerReader2 对象读取数据块    
     return getRemoteBlockReaderFromTcp();
   }
 
@@ -419,6 +421,8 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
     }
     ShortCircuitCache cache = clientContext.getShortCircuitCache();
     ExtendedBlockId key = new ExtendedBlockId(block.getBlockId(), block.getBlockPoolId());
+    // ShortCircuitReplicaInfo 对象中的 ShortCircuitReplica 类保存了用来执行短路读取的文件描述符、Client
+    // 和Datanode共享内存中记录当前副本信息的 Slot 对象，以及数据块在内存的映射文件 mmapData
     ShortCircuitReplicaInfo info = cache.fetchOrCreate(key, this);
     InvalidToken exc = info.getInvalidTokenException();
     if (exc != null) {
@@ -436,6 +440,8 @@ public class BlockReaderFactory implements ShortCircuitReplicaCreator {
       }
       return null;
     }
+    
+    // 使用 ShortCircuitReplicaInfo 中保存的文件描述符构造数据块文件以及校验文件的输入流，然后构造 BlockReaderLocal 类
     return new BlockReaderLocal.Builder(conf).
         setFilename(fileName).
         setBlock(block).
