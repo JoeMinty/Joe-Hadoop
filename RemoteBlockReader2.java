@@ -81,6 +81,7 @@ import com.google.common.annotations.VisibleForTesting;
  * is more efficient and simpler than the older BlockReader
  * implementation. It should be renamed to RemoteBlockReader
  * once we are confident in it.
+ * 使用TCP协议从 Datanode 读取数据块
  */
 @InterfaceAudience.Private
 public class RemoteBlockReader2  implements BlockReader {
