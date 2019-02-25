@@ -61,6 +61,7 @@ public interface DataTransferProtocol {
    * @param sendChecksum if false, the DN should skip reading and sending
    *        checksums
    * @param cachingStrategy  The caching strategy to use.
+   * 从当前Datanode上读取指定的数据块
    */
   public void readBlock(final ExtendedBlock blk,
       final Token<BlockTokenIdentifier> blockToken,
@@ -94,6 +95,7 @@ public interface DataTransferProtocol {
    * @param latestGenerationStamp the latest generation stamp of the block.
    * @param pinning whether to pin the block, so Balancer won't move it.
    * @param targetPinnings whether to pin the block on target datanode
+   * 将当前Datanode上存储的指定数据块写入数据流管道（pipeLine）中
    */
   public void writeBlock(final ExtendedBlock blk,
       final StorageType storageType, 
