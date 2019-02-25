@@ -14,6 +14,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ * Sender 使用ProtoBuf将参数序列化，然后用一个枚举类Op描述调用的是什么方法，最后将序列化后的参数和Op一起发送给接送方。
  */
 package org.apache.hadoop.hdfs.protocol.datatransfer;
 
@@ -102,6 +103,7 @@ public class Sender implements DataTransferProtocol {
       final boolean sendChecksum,
       final CachingStrategy cachingStrategy) throws IOException {
 
+    // 将参数使用ProtoBuf序列化
     OpReadBlockProto proto = OpReadBlockProto.newBuilder()
       .setHeader(DataTransferProtoUtil.buildClientHeader(blk, clientName, blockToken))
       .setOffset(blockOffset)
@@ -110,6 +112,8 @@ public class Sender implements DataTransferProtocol {
       .setCachingStrategy(getCachingStrategy(cachingStrategy))
       .build();
 
+    // 调用 send() 方法发送Op.READ_BLOCK描述当前调用的是readBlock()方法
+    // 同时发送序列化后的参数
     send(out, Op.READ_BLOCK, proto);
   }
   
