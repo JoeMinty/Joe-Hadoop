@@ -1694,12 +1694,15 @@ public class DFSInputStream extends FSInputStream
       }
     }
     ByteBuffer buffer = null;
+    // 首先尝试零拷贝模式 
     if (dfsClient.getConf().getShortCircuitConf().isShortCircuitMmapEnabled()) {
       buffer = tryReadZeroCopy(maxLength, opts);
     }
     if (buffer != null) {
       return buffer;
     }
+      
+    // 如果零拷贝读取不成功，则退化为一个普通的读取  
     buffer = ByteBufferUtil.fallbackRead(this, bufferPool, maxLength);
     if (buffer != null) {
       getExtendedReadBuffers().put(buffer, bufferPool);
@@ -1717,6 +1720,7 @@ public class DFSInputStream extends FSInputStream
     final long blockPos = curPos - blockStartInFile;
 
     // Shorten this read if the end of the block is nearby.
+    // 首先确保读取是在同一个数据块之内
     long length63;
     if ((curPos + maxLength) <= (curEnd + 1)) {
       length63 = maxLength;
@@ -1735,6 +1739,7 @@ public class DFSInputStream extends FSInputStream
           maxLength, length63, blockPos, curPos, curEnd);
     }
     // Make sure that don't go beyond 31-bit offsets in the MappedByteBuffer.
+    // 确保读取映射数据没有超过2GB
     int length;
     if (blockPos + length63 <= Integer.MAX_VALUE) {
       length = (int)length63;
