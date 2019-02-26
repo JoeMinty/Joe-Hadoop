@@ -451,6 +451,7 @@ public class DataNode extends ReconfigurableBase
   
   private void initDataXceiver(Configuration conf) throws IOException {
     // find free port or use privileged port provided
+    // TcpPeerServer 是对ServerSocket的封装，通过accept()方法返回Peer对象（对Socket的封装，提供通信的输入/输出流）
     TcpPeerServer tcpPeerServer;
     if (secureResources != null) {
       tcpPeerServer = new TcpPeerServer(secureResources);
@@ -458,27 +459,36 @@ public class DataNode extends ReconfigurableBase
       tcpPeerServer = new TcpPeerServer(dnConf.socketWriteTimeout,
           DataNode.getStreamingAddr(conf));
     }
+      
+    // 设置TCP接收缓冲区 
     tcpPeerServer.setReceiveBufferSize(HdfsConstants.DEFAULT_DATA_SOCKET_SIZE);
     streamingAddr = tcpPeerServer.getStreamingAddr();
     LOG.info("Opened streaming server at " + streamingAddr);
     this.threadGroup = new ThreadGroup("dataXceiverServer");
+      
+    // 构造DataXceiverServer对象
     xserver = new DataXceiverServer(tcpPeerServer, conf, this);
+    // 将DataXceiverServer线程组设置为守护线程
     this.dataXceiverServer = new Daemon(threadGroup, xserver);
     this.threadGroup.setDaemon(true); // auto destroy when empty
 
+    // 短路读取情况
     if (conf.getBoolean(DFSConfigKeys.DFS_CLIENT_READ_SHORTCIRCUIT_KEY,
               DFSConfigKeys.DFS_CLIENT_READ_SHORTCIRCUIT_DEFAULT) ||
         conf.getBoolean(DFSConfigKeys.DFS_CLIENT_DOMAIN_SOCKET_DATA_TRAFFIC,
               DFSConfigKeys.DFS_CLIENT_DOMAIN_SOCKET_DATA_TRAFFIC_DEFAULT)) {
+      // 构造DomainPeerServer（底层基于DomainSocket，用于本地进程间通信）  
       DomainPeerServer domainPeerServer =
                 getDomainPeerServer(conf, streamingAddr.getPort());
       if (domainPeerServer != null) {
+        // 构造localDataXceiverServer
         this.localDataXceiverServer = new Daemon(threadGroup,
             new DataXceiverServer(domainPeerServer, conf, this));
         LOG.info("Listening on UNIX domain socket: " +
             domainPeerServer.getBindPath());
       }
     }
+    // 创建ShortCircuitRegistry对象
     this.shortCircuitRegistry = new ShortCircuitRegistry(conf);
   }
 
