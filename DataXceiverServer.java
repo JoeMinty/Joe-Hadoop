@@ -105,7 +105,9 @@ class DataXceiverServer implements Runnable {
    */
   final long estimateBlockSize;
   
-  
+  /**
+   *  Datanode.initDataXceiver()方法调用
+   */
   DataXceiverServer(PeerServer peerServer, Configuration conf,
       DataNode datanode) {
     
