@@ -188,13 +188,15 @@ class DataXceiver extends Receiver implements Runnable {
     try {
       dataXceiverServer.addPeer(peer, Thread.currentThread(), this);
       peer.setWriteTimeout(datanode.getDnConf().socketWriteTimeout);
-      InputStream input = socketIn;
+      InputStream input = socketIn;  // 获取底层的输入流
       try {
         IOStreamPair saslStreams = datanode.saslServer.receive(peer, socketOut,
           socketIn, datanode.getXferAddress().getPort(),
           datanode.getDatanodeId());
+        // 对输入流进行装饰
         input = new BufferedInputStream(saslStreams.in,
           HdfsConstants.SMALL_BUFFER_SIZE);
+        // 获取底层的输出流
         socketOut = saslStreams.out;
       } catch (InvalidMagicNumberException imne) {
         if (imne.isHandshake4Encryption()) {
@@ -211,6 +213,7 @@ class DataXceiver extends Receiver implements Runnable {
         return;
       }
       
+      // 调用父类的initialize()方法完成Receiver的初始化操作
       super.initialize(new DataInputStream(input));
       
       // We process requests in a loop, and stay around for a short timeout.
@@ -226,9 +229,12 @@ class DataXceiver extends Receiver implements Runnable {
           } else {
             peer.setReadTimeout(dnConf.socketTimeout);
           }
+          
+          // 调用父类的方法从输入流中解析操作符
           op = readOp();
         } catch (InterruptedIOException ignored) {
           // Time out while we wait for client rpc
+          // 等待Client RPC 超时
           break;
         } catch (IOException err) {
           // Since we optimistically expect the next op, it's quite normal to get EOF here.
@@ -250,6 +256,7 @@ class DataXceiver extends Receiver implements Runnable {
         }
 
         opStartTime = monotonicNow();
+        // 调用父类的方法处理这个流式请求
         processOp(op);
         ++opsProcessed;
       } while ((peer != null) &&
@@ -505,6 +512,15 @@ class DataXceiver extends Receiver implements Runnable {
     peer = null;
   }
 
+  /**
+   * ExtendedBlock block：要读取的数据块 
+   * Token<BlockTokenIdentifier> blockToken：数据块的访问令牌
+   * clientName：客户端名称
+   * blockOffset：要读取数据在数据块中的位置
+   * length：读取数据的长度
+   * boolean sendChecksum：Datanode是否发送校验数据。数据块的校验工作实在客户端完成的，客户端会将校验结果返回给Datanode
+   * CachingStrategy cachingStrategy：缓存策略
+   */ 
   @Override
   public void readBlock(final ExtendedBlock block,
       final Token<BlockTokenIdentifier> blockToken,
@@ -516,6 +532,7 @@ class DataXceiver extends Receiver implements Runnable {
     previousOpClientName = clientName;
     long read = 0;
     updateCurrentThreadName("Sending block " + block);
+    // 获取Datanode连接到客户端的IO流
     OutputStream baseStream = getOutputStream();
     DataOutputStream out = getBufferedOutputStream();
     checkAccess(out, true, block, blockToken,
@@ -535,6 +552,7 @@ class DataXceiver extends Receiver implements Runnable {
 
     try {
       try {
+        // 构造BlockSender对象
         blockSender = new BlockSender(block, blockOffset, length,
             true, false, sendChecksum, datanode, clientTraceFmt,
             cachingStrategy);
@@ -546,9 +564,11 @@ class DataXceiver extends Receiver implements Runnable {
       }
       
       // send op status
+      // 构造成功后，发送BlockOpResponseProto响应给客户端， 通知客户端度请求已经成功接收，并且告知客户端当前数据节点的校验信息
       writeSuccessWithChecksumInfo(blockSender, new DataOutputStream(getOutputStream()));
 
       long beginRead = Time.monotonicNow();
+      // 发送数据
       read = blockSender.sendBlock(out, baseStream, null); // send data
       long duration = Time.monotonicNow() - beginRead;
       if (blockSender.didSendEntireByteRange()) {
