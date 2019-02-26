@@ -68,17 +68,23 @@ public class Sender implements DataTransferProtocol {
   /** Initialize a operation. */
   private static void op(final DataOutput out, final Op op
       ) throws IOException {
+    // 向输出流中写入DataTransferPProtocol版本号，然后再写入操作码op 
     out.writeShort(DataTransferProtocol.DATA_TRANSFER_VERSION);
     op.write(out);
   }
 
+  /**
+   * 将读取数据块的请求通过IO发送给远程的Datanode
+   */
   private static void send(final DataOutputStream out, final Op opcode,
       final Message proto) throws IOException {
     if (LOG.isTraceEnabled()) {
       LOG.trace("Sending DataTransferOp " + proto.getClass().getSimpleName()
           + ": " + proto);
     }
+    // 调用op()方法写入版本号，然后在写入操作码Op
     op(out, opcode);
+    // 写入序列化后的参数
     proto.writeDelimitedTo(out);
     out.flush();
   }
