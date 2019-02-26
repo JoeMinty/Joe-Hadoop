@@ -290,6 +290,9 @@ class BlockReaderLocal implements BlockReader {
     }
   }
 
+  /**
+   * 将dataBuf缓冲区中的数据拉取到buf中，然后返回读取的字节数
+   */
   private synchronized int drainDataBuf(ByteBuffer buf) {
     if (dataBuf == null) return -1;
     int oldLimit = dataBuf.limit();
@@ -317,6 +320,8 @@ class BlockReaderLocal implements BlockReader {
    * @param canSkipChecksum  True if we can skip checksumming.
    *
    * @return      Total bytes read.  0 on EOF.
+   *
+   * 将数据从输入流读入指定buf中，并将校验和读入checksumBuf中进行校验操作
    */
   private synchronized int fillBuffer(ByteBuffer buf, boolean canSkipChecksum)
       throws IOException {
@@ -470,6 +475,8 @@ class BlockReaderLocal implements BlockReader {
    * @param canSkipChecksum  true if we can skip checksumming.
    * @return                 true if we hit EOF.
    * @throws IOException
+   *
+   * 将数据读入dataBuf缓冲区中，将校验和读入checksumBuf缓冲区中
    */
   private synchronized boolean fillDataBuf(boolean canSkipChecksum)
       throws IOException {
@@ -514,17 +521,21 @@ class BlockReaderLocal implements BlockReader {
    */
    /**
    * 如果不可以免校验，并且开启了预读取
+   * 该方法在BlockReaderLocal对象上申请了两个缓冲区：
+   * 1.dataBuf：数据缓冲区，大小为maxReadaheadLength，这个长度始终是校验块（chunk，一个校验值对应的数据长度）的整数倍
+   * 2.checksumBuf：校验和缓冲区
    */
   private synchronized int readWithBounceBuffer(ByteBuffer buf,
         boolean canSkipChecksum) throws IOException {
     int total = 0;
-    int bb = drainDataBuf(buf); // drain bounce buffer if possible
+    int bb = drainDataBuf(buf); // drain bounce buffer if possible， 将缓冲区的数据写入到buf中
     if (bb >= 0) {
       total += bb;
       if (buf.remaining() == 0) return total;
     }
     boolean eof = true, done = false;
     do {
+      // 如果buf的空间足够大，并且输入流游标在chunk边界上，则直接从IO流中将数据写入buf
       if (buf.isDirect() && (buf.remaining() >= maxReadaheadLength)
             && ((dataPos % bytesPerChecksum) == 0)) {
         // Fast lane: try to read directly into user-supplied buffer, bypassing
@@ -545,10 +556,12 @@ class BlockReaderLocal implements BlockReader {
         }
         total += nRead;
       } else {
+        // 否则，将数据读入dataBuf缓存
         // Slow lane: refill bounce buffer.
         if (fillDataBuf(canSkipChecksum)) {
           done = true;
         }
+        // 然后将dataBuf中的数据导入buf
         bb = drainDataBuf(buf); // drain bounce buffer if possible
         if (bb >= 0) {
           eof = false;
