@@ -142,6 +142,10 @@ public interface DataTransferProtocol {
    *                          can understand.
    * @param supportsReceiptVerification  True if the client supports
    *                          receipt verification.
+   *
+   * 向Datanode申请数据块文件以及校验和文件的文件描述符，并且同步共享内存中的Slot对象的状态
+   * 在这之前，会在DFSClient侧的共享内存中为数据块申请一个槽位并构造一个Slot对象
+   * Datanode的requestShortCircuitFds()方法响应这个请求
    */
   public void requestShortCircuitFds(final ExtendedBlock blk,
       final Token<BlockTokenIdentifier> blockToken,
@@ -152,6 +156,9 @@ public interface DataTransferProtocol {
    * Release a pair of short-circuit FDs requested earlier.
    *
    * @param slotId          SlotID used by the earlier file descriptors.
+   *
+   * 当客户端完成了对副本的短路读操作，需要关闭ShortCircuitReplica对象
+   * Datanode的DataXceiver.realeaseShortCircuitFds()方法响应
    */
   public void releaseShortCircuitFds(final SlotId slotId) throws IOException;
 
@@ -159,6 +166,9 @@ public interface DataTransferProtocol {
    * Request a short circuit shared memory area from a DataNode.
    * 
    * @param clientName       The name of the client.
+   *
+   * 向Datanode发起申请共享内存的请求
+   * Datanode的DataXceiver.requestShortCircuitShm()方法会响应这个请求
    */
   public void requestShortCircuitShm(String clientName) throws IOException;
   
