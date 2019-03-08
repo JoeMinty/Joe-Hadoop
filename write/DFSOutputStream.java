@@ -646,4 +646,370 @@ public class DFSOutputStream extends FSOutputSummer
       }
     }
 
-    
+   // The following synchronized methods are used whenever 
+    // errorIndex or restartingNodeIndex is set. This is because
+    // check & set needs to be atomic. Simply reading variables
+    // does not require a synchronization. When responder is
+    // not running (e.g. during pipeline recovery), there is no
+    // need to use these methods.
+
+    /** Set the error node index. Called by responder */
+    synchronized void setErrorIndex(int idx) {
+      errorIndex = idx;
+    }
+
+    /** Set the restarting node index. Called by responder */
+    synchronized void setRestartingNodeIndex(int idx) {
+      restartingNodeIndex.set(idx);
+      // If the data streamer has already set the primary node
+      // bad, clear it. It is likely that the write failed due to
+      // the DN shutdown. Even if it was a real failure, the pipeline
+      // recovery will take care of it.
+      errorIndex = -1;      
+    }
+
+    /**
+     * This method is used when no explicit error report was received,
+     * but something failed. When the primary node is a suspect or
+     * unsure about the cause, the primary node is marked as failed.
+     */
+    synchronized void tryMarkPrimaryDatanodeFailed() {
+      // There should be no existing error and no ongoing restart.
+      if ((errorIndex == -1) && (restartingNodeIndex.get() == -1)) {
+        errorIndex = 0;
+      }
+    }
+
+    /**
+     * Examine whether it is worth waiting for a node to restart.
+     * @param index the node index
+     */
+    boolean shouldWaitForRestart(int index) {
+      // Only one node in the pipeline.
+      if (nodes.length == 1) {
+        return true;
+      }
+
+      // Is it a local node?
+      InetAddress addr = null;
+      try {
+        addr = InetAddress.getByName(nodes[index].getIpAddr());
+      } catch (java.net.UnknownHostException e) {
+        // we are passing an ip address. this should not happen.
+        assert false;
+      }
+
+      if (addr != null && NetUtils.isLocalAddress(addr)) {
+        return true;
+      }
+      return false;
+    }
+
+    //
+    // Processes responses from the datanodes.  A packet is removed
+    // from the ackQueue when its response arrives.
+    //
+    private class ResponseProcessor extends Daemon {
+
+      private volatile boolean responderClosed = false;
+      private DatanodeInfo[] targets = null;
+      private boolean isLastPacketInBlock = false;
+
+      ResponseProcessor (DatanodeInfo[] targets) {
+        this.targets = targets;
+      }
+
+      @Override
+      public void run() {
+
+        setName("ResponseProcessor for block " + block);
+        PipelineAck ack = new PipelineAck();
+
+        TraceScope scope = NullScope.INSTANCE;
+        while (!responderClosed && dfsClient.clientRunning && !isLastPacketInBlock) {
+          // process responses from datanodes.
+          try {
+            // read an ack from the pipeline
+            long begin = Time.monotonicNow();
+            ack.readFields(blockReplyStream);
+            long duration = Time.monotonicNow() - begin;
+            if (duration > dfsclientSlowLogThresholdMs
+                && ack.getSeqno() != DFSPacket.HEART_BEAT_SEQNO) {
+              DFSClient.LOG
+                  .warn("Slow ReadProcessor read fields took " + duration
+                      + "ms (threshold=" + dfsclientSlowLogThresholdMs + "ms); ack: "
+                      + ack + ", targets: " + Arrays.asList(targets));
+            } else if (DFSClient.LOG.isDebugEnabled()) {
+              DFSClient.LOG.debug("DFSClient " + ack);
+            }
+
+            long seqno = ack.getSeqno();
+            // processes response status from datanodes.
+            for (int i = ack.getNumOfReplies()-1; i >=0  && dfsClient.clientRunning; i--) {
+              final Status reply = PipelineAck.getStatusFromHeader(ack
+                .getHeaderFlag(i));
+              // Restart will not be treated differently unless it is
+              // the local node or the only one in the pipeline.
+              if (PipelineAck.isRestartOOBStatus(reply) &&
+                  shouldWaitForRestart(i)) {
+                restartDeadline = dfsClient.getConf().datanodeRestartTimeout
+                    + Time.monotonicNow();
+                setRestartingNodeIndex(i);
+                String message = "A datanode is restarting: " + targets[i];
+                DFSClient.LOG.info(message);
+               throw new IOException(message);
+              }
+              // node error
+              if (reply != SUCCESS) {
+                setErrorIndex(i); // first bad datanode
+                throw new IOException("Bad response " + reply +
+                    " for block " + block +
+                    " from datanode " + 
+                    targets[i]);
+              }
+            }
+            
+            assert seqno != PipelineAck.UNKOWN_SEQNO : 
+              "Ack for unknown seqno should be a failed ack: " + ack;
+            if (seqno == DFSPacket.HEART_BEAT_SEQNO) {  // a heartbeat ack
+              continue;
+            }
+
+            // a success ack for a data packet
+            DFSPacket one;
+            synchronized (dataQueue) {
+              one = ackQueue.getFirst();
+            }
+            if (one.getSeqno() != seqno) {
+              throw new IOException("ResponseProcessor: Expecting seqno " +
+                                    " for block " + block +
+                                    one.getSeqno() + " but received " + seqno);
+            }
+            isLastPacketInBlock = one.isLastPacketInBlock();
+
+            // Fail the packet write for testing in order to force a
+            // pipeline recovery.
+            if (DFSClientFaultInjector.get().failPacket() &&
+                isLastPacketInBlock) {
+              failPacket = true;
+              throw new IOException(
+                    "Failing the last packet for testing.");
+            }
+              
+            // update bytesAcked
+            block.setNumBytes(one.getLastByteOffsetBlock());
+
+            synchronized (dataQueue) {
+              scope = Trace.continueSpan(one.getTraceSpan());
+              one.setTraceSpan(null);
+              lastAckedSeqno = seqno;
+              ackQueue.removeFirst();
+              dataQueue.notifyAll();
+
+              one.releaseBuffer(byteArrayManager);
+            }
+          } catch (Exception e) {
+            if (!responderClosed) {
+              if (e instanceof IOException) {
+                setLastException((IOException)e);
+              }
+              hasError = true;
+              // If no explicit error report was received, mark the primary
+              // node as failed.
+              tryMarkPrimaryDatanodeFailed();
+              synchronized (dataQueue) {
+                dataQueue.notifyAll();
+              }
+              if (restartingNodeIndex.get() == -1) {
+                DFSClient.LOG.warn("DFSOutputStream ResponseProcessor exception "
+                     + " for block " + block, e);
+              }
+              responderClosed = true;
+            }
+          } finally {
+            scope.close();
+          }
+        }
+      }
+
+      void close() {
+        responderClosed = true;
+        this.interrupt();
+      }
+    }
+
+    // If this stream has encountered any errors so far, shutdown 
+    // threads and mark stream as closed. Returns true if we should
+    // sleep for a while after returning from this call.
+    //
+    private boolean processDatanodeError() throws IOException {
+      if (response != null) {
+        DFSClient.LOG.info("Error Recovery for " + block +
+        " waiting for responder to exit. ");
+        return true;
+      }
+      closeStream();
+
+      // move packets from ack queue to front of the data queue
+      synchronized (dataQueue) {
+        dataQueue.addAll(0, ackQueue);
+        ackQueue.clear();
+      }
+
+      // Record the new pipeline failure recovery.
+      if (lastAckedSeqnoBeforeFailure != lastAckedSeqno) {
+         lastAckedSeqnoBeforeFailure = lastAckedSeqno;
+         pipelineRecoveryCount = 1;
+      } else {
+        // If we had to recover the pipeline five times in a row for the
+        // same packet, this client likely has corrupt data or corrupting
+        // during transmission.
+        if (++pipelineRecoveryCount > 5) {
+          DFSClient.LOG.warn("Error recovering pipeline for writing " +
+              block + ". Already retried 5 times for the same packet.");
+          lastException.set(new IOException("Failing write. Tried pipeline " +
+              "recovery 5 times without success."));
+          streamerClosed = true;
+          return false;
+        }
+      }
+      boolean doSleep = setupPipelineForAppendOrRecovery();
+      
+      if (!streamerClosed && dfsClient.clientRunning) {
+        if (stage == BlockConstructionStage.PIPELINE_CLOSE) {
+
+          // If we had an error while closing the pipeline, we go through a fast-path
+          // where the BlockReceiver does not run. Instead, the DataNode just finalizes
+          // the block immediately during the 'connect ack' process. So, we want to pull
+          // the end-of-block packet from the dataQueue, since we don't actually have
+          // a true pipeline to send it over.
+          //
+          // We also need to set lastAckedSeqno to the end-of-block Packet's seqno, so that
+          // a client waiting on close() will be aware that the flush finished.
+          synchronized (dataQueue) {
+            DFSPacket endOfBlockPacket = dataQueue.remove();  // remove the end of block packet
+            Span span = endOfBlockPacket.getTraceSpan();
+            if (span != null) {
+              // Close any trace span associated with this Packet
+              TraceScope scope = Trace.continueSpan(span);
+              scope.close();
+            }
+            assert endOfBlockPacket.isLastPacketInBlock();
+            assert lastAckedSeqno == endOfBlockPacket.getSeqno() - 1;
+            lastAckedSeqno = endOfBlockPacket.getSeqno();
+            dataQueue.notifyAll();
+          }
+          endBlock();
+        } else {
+          initDataStreaming();
+        }
+      }
+      
+      return doSleep;
+    }
+
+    private void setHflush() {
+      isHflushed = true;
+    }
+
+    private int findNewDatanode(final DatanodeInfo[] original
+        ) throws IOException {
+      if (nodes.length != original.length + 1) {
+        throw new IOException(
+            new StringBuilder()
+            .append("Failed to replace a bad datanode on the existing pipeline ")
+            .append("due to no more good datanodes being available to try. ")
+            .append("(Nodes: current=").append(Arrays.asList(nodes))
+            .append(", original=").append(Arrays.asList(original)).append("). ")
+            .append("The current failed datanode replacement policy is ")
+            .append(dfsClient.dtpReplaceDatanodeOnFailure).append(", and ")
+            .append("a client may configure this via '")
+            .append(DFSConfigKeys.DFS_CLIENT_WRITE_REPLACE_DATANODE_ON_FAILURE_POLICY_KEY)
+            .append("' in its configuration.")
+            .toString());
+      }
+      for(int i = 0; i < nodes.length; i++) {
+        int j = 0;
+        for(; j < original.length && !nodes[i].equals(original[j]); j++);
+        if (j == original.length) {
+          return i;
+        }
+      }
+      throw new IOException("Failed: new datanode not found: nodes="
+          + Arrays.asList(nodes) + ", original=" + Arrays.asList(original));
+    }
+
+    private void addDatanode2ExistingPipeline() throws IOException {
+      if (DataTransferProtocol.LOG.isDebugEnabled()) {
+        DataTransferProtocol.LOG.debug("lastAckedSeqno = " + lastAckedSeqno);
+      }
+      /*
+       * Is data transfer necessary?  We have the following cases.
+       * 
+       * Case 1: Failure in Pipeline Setup
+       * - Append
+       *    + Transfer the stored replica, which may be a RBW or a finalized.
+       * - Create
+       *    + If no data, then no transfer is required.
+       *    + If there are data written, transfer RBW. This case may happens 
+       *      when there are streaming failure earlier in this pipeline.
+       *
+       * Case 2: Failure in Streaming
+       * - Append/Create:
+       *    + transfer RBW
+       * 
+       * Case 3: Failure in Close
+       * - Append/Create:
+       *    + no transfer, let NameNode replicates the block.
+       */
+      if (!isAppend && lastAckedSeqno < 0
+          && stage == BlockConstructionStage.PIPELINE_SETUP_CREATE) {
+        //no data have been written
+        return;
+      } else if (stage == BlockConstructionStage.PIPELINE_CLOSE
+          || stage == BlockConstructionStage.PIPELINE_CLOSE_RECOVERY) {
+        //pipeline is closing
+        return;
+      }
+
+      int tried = 0;
+      final DatanodeInfo[] original = nodes;
+      final StorageType[] originalTypes = storageTypes;
+      final String[] originalIDs = storageIDs;
+      IOException caughtException = null;
+      ArrayList<DatanodeInfo> exclude = new ArrayList<DatanodeInfo>(failed);
+      while (tried < 3) {
+        LocatedBlock lb;
+        //get a new datanode
+        lb = dfsClient.namenode.getAdditionalDatanode(
+            src, fileId, block, nodes, storageIDs,
+            exclude.toArray(new DatanodeInfo[exclude.size()]),
+            1, dfsClient.clientName);
+        // a new node was allocated by the namenode. Update nodes.
+        setPipeline(lb);
+
+        //find the new datanode
+        final int d = findNewDatanode(original);
+        //transfer replica. pick a source from the original nodes
+        final DatanodeInfo src = original[tried % original.length];
+        final DatanodeInfo[] targets = {nodes[d]};
+        final StorageType[] targetStorageTypes = {storageTypes[d]};
+
+        try {
+          transfer(src, targets, targetStorageTypes, lb.getBlockToken());
+        } catch (IOException ioe) {
+          DFSClient.LOG.warn("Error transferring data from " + src + " to " +
+              nodes[d] + ": " + ioe.getMessage());
+          caughtException = ioe;
+          // add the allocated node to the exclude list.
+          exclude.add(nodes[d]);
+          setPipeline(original, originalTypes, originalIDs);
+          tried++;
+          continue;
+        }
+        return; // finished successfully
+      }
+      // All retries failed
+      throw (caughtException != null) ? caughtException :
+         new IOException("Failed to add a node");
+    } 
