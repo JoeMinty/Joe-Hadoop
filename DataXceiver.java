@@ -651,12 +651,15 @@ class DataXceiver extends Receiver implements Runnable {
       final boolean[] targetPinnings) throws IOException {
     previousOpClientName = clientname;
     updateCurrentThreadName("Receiving block " + block);
-    final boolean isDatanode = clientname.length() == 0;
-    final boolean isClient = !isDatanode;
+    final boolean isDatanode = clientname.length() == 0; // 指示当前写操作是否是DFSClient发起的
+    final boolean isClient = !isDatanode; // 与isDatanode相反，表示是Datanode发起的
+    // 指示当前的写操作是否为数据块复制，利用数据流管道状态来判断
     final boolean isTransfer = stage == BlockConstructionStage.TRANSFER_RBW
         || stage == BlockConstructionStage.TRANSFER_FINALIZED;
     long size = 0;
+    
     // reply to upstream datanode or client 
+    // 创建replyOut输出流
     final DataOutputStream replyOut = getBufferedOutputStream();
     checkAccess(replyOut, isClient, block, blockToken,
         Op.WRITE_BLOCK, BlockTokenSecretManager.AccessMode.WRITE);
@@ -690,11 +693,11 @@ class DataXceiver extends Receiver implements Runnable {
     LOG.info("Receiving " + block + " src: " + remoteAddress + " dest: "
         + localAddress);
 
-    DataOutputStream mirrorOut = null;  // stream to next target
-    DataInputStream mirrorIn = null;    // reply from next target
-    Socket mirrorSock = null;           // socket to next target
-    String mirrorNode = null;           // the name:port of next target
-    String firstBadLink = "";           // first datanode that failed in connection setup
+    DataOutputStream mirrorOut = null;  // stream to next target，到下游数据节点的输出流
+    DataInputStream mirrorIn = null;    // reply from next target，下游数据节点的输入流
+    Socket mirrorSock = null;           // socket to next target，到下游节点的Socket
+    String mirrorNode = null;           // the name:port of next target，到下游节点的名称:端口
+    String firstBadLink = "";           // first datanode that failed in connection setup，数据流管道中第一个失败的Datanode
     Status mirrorInStatus = SUCCESS;
     final String storageUuid;
     try {
@@ -716,6 +719,7 @@ class DataXceiver extends Receiver implements Runnable {
 
       //
       // Connect to downstream machine, if appropriate
+      // 打开一个BlockReceiver，用于从上游节点接收数据块
       //
       if (targets.length > 0) {
         InetSocketAddress mirrorTarget = null;
