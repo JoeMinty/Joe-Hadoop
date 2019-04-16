@@ -281,3 +281,463 @@ public DFSClient(URI nameNodeUri, ClientProtocol rpcNamenode,
 
 
 #### 服务器获取Server对象
+
+##### 构造NameNodeRpcServer
+
+**NameNodeRpcServer.java**
+```java
+
+ public NameNodeRpcServer(Configuration conf, NameNode nn)
+      throws IOException {
+    // ...
+    // 设置RPC引擎为protobuf
+    RPC.setProtocolEngine(conf, ClientNamenodeProtocolPB.class,
+        ProtobufRpcEngine.class);
+
+    // 构造ClientNamenodeProtocolServerSideTranslatorPB对象
+    // 适配ClientProtocolPB到ClientProtocol接口的转换
+    ClientNamenodeProtocolServerSideTranslatorPB clientProtocolServerTranslator = 
+         new ClientNamenodeProtocolServerSideTranslatorPB(this);
+         
+     // 构造BlockingService对象
+     // 用于将Server提取出的请求转到clientProtocolServerTranslator对象   
+     BlockingService clientNNPbService = ClientNamenodeProtocol.
+         newReflectiveBlockingService(clientProtocolServerTranslator);
+    
+    DatanodeProtocolServerSideTranslatorPB dnProtoPbTranslator = 
+        new DatanodeProtocolServerSideTranslatorPB(this);
+    BlockingService dnProtoPbService = DatanodeProtocolService
+        .newReflectiveBlockingService(dnProtoPbTranslator);
+
+    NamenodeProtocolServerSideTranslatorPB namenodeProtocolXlator = 
+        new NamenodeProtocolServerSideTranslatorPB(this);
+    BlockingService NNPbService = NamenodeProtocolService
+          .newReflectiveBlockingService(namenodeProtocolXlator);
+    
+    // ... 其他接口同理
+    
+    WritableRpcEngine.ensureInitialized();
+
+    // 初始化serviceRpcAddr对象，这个对象用于请求来自Datanode的请求
+    InetSocketAddress serviceRpcAddr = nn.getServiceRpcServerAddress(conf);
+    if (serviceRpcAddr != null) {
+      String bindHost = nn.getServiceRpcServerBindHost(conf);
+      if (bindHost == null) {
+        bindHost = serviceRpcAddr.getHostName();
+      }
+      LOG.info("Service RPC server is binding to " + bindHost + ":" +
+          serviceRpcAddr.getPort());
+
+      int serviceHandlerCount =
+        conf.getInt(DFS_NAMENODE_SERVICE_HANDLER_COUNT_KEY,
+                    DFS_NAMENODE_SERVICE_HANDLER_COUNT_DEFAULT);
+      // 构造serviceRpcServer对象，并配置ClientNamenodeProtocolPB的响应类为clientNNPbService
+      this.serviceRpcServer = new RPC.Builder(conf)
+          .setProtocol(
+              org.apache.hadoop.hdfs.protocolPB.ClientNamenodeProtocolPB.class)
+          .setInstance(clientNNPbService)
+          .setBindAddress(bindHost)
+          .setPort(serviceRpcAddr.getPort()).setNumHandlers(serviceHandlerCount)
+          .setVerbose(false)
+          .setSecretManager(namesystem.getDelegationTokenSecretManager())
+          .build();
+
+      // Add all the RPC protocols that the namenode implements
+      // 注册NamenodePRCServer实现的所有接口
+      DFSUtil.addPBProtocol(conf, HAServiceProtocolPB.class, haPbService,
+          serviceRpcServer);
+      DFSUtil.addPBProtocol(conf, NamenodeProtocolPB.class, NNPbService,
+          serviceRpcServer);
+      DFSUtil.addPBProtocol(conf, DatanodeProtocolPB.class, dnProtoPbService,
+          serviceRpcServer);
+      DFSUtil.addPBProtocol(conf, RefreshAuthorizationPolicyProtocolPB.class,
+          refreshAuthService, serviceRpcServer);
+      DFSUtil.addPBProtocol(conf, RefreshUserMappingsProtocolPB.class, 
+          refreshUserMappingService, serviceRpcServer);
+      // We support Refreshing call queue here in case the client RPC queue is full
+      // 添加其他协议
+      DFSUtil.addPBProtocol(conf, RefreshCallQueueProtocolPB.class,
+          refreshCallQueueService, serviceRpcServer);
+      DFSUtil.addPBProtocol(conf, GenericRefreshProtocolPB.class,
+          genericRefreshService, serviceRpcServer);
+      DFSUtil.addPBProtocol(conf, GetUserMappingsProtocolPB.class, 
+          getUserMappingService, serviceRpcServer);
+      DFSUtil.addPBProtocol(conf, TraceAdminProtocolPB.class,
+          traceAdminService, serviceRpcServer);
+
+      // Update the address with the correct port
+      // 更新端口号
+      InetSocketAddress listenAddr = serviceRpcServer.getListenerAddress();
+      serviceRPCAddress = new InetSocketAddress(
+            serviceRpcAddr.getHostName(), listenAddr.getPort());
+      nn.setRpcServiceServerAddress(conf, serviceRPCAddress);
+    } else {
+      serviceRpcServer = null;
+      serviceRPCAddress = null;
+    }
+    InetSocketAddress rpcAddr = nn.getRpcServerAddress(conf);
+    String bindHost = nn.getRpcServerBindHost(conf);
+    if (bindHost == null) {
+      bindHost = rpcAddr.getHostName();
+    }
+    LOG.info("RPC server is binding to " + bindHost + ":" + rpcAddr.getPort());
+
+    // 构造clientRpcServer，用于响应来自HDFS客户端的RPC请求
+    this.clientRpcServer = new RPC.Builder(conf)
+        .setProtocol(
+            org.apache.hadoop.hdfs.protocolPB.ClientNamenodeProtocolPB.class)
+        .setInstance(clientNNPbService).setBindAddress(bindHost)
+        .setPort(rpcAddr.getPort()).setNumHandlers(handlerCount)
+        .setVerbose(false)
+        .setSecretManager(namesystem.getDelegationTokenSecretManager()).build();
+
+    // Add all the RPC protocols that the namenode implements
+    // 注册NamenodePRCServer实现的所有接口
+    DFSUtil.addPBProtocol(conf, HAServiceProtocolPB.class, haPbService,
+        clientRpcServer);
+    DFSUtil.addPBProtocol(conf, NamenodeProtocolPB.class, NNPbService,
+        clientRpcServer);
+    DFSUtil.addPBProtocol(conf, DatanodeProtocolPB.class, dnProtoPbService,
+        clientRpcServer);
+    DFSUtil.addPBProtocol(conf, RefreshAuthorizationPolicyProtocolPB.class, 
+        refreshAuthService, clientRpcServer);
+    DFSUtil.addPBProtocol(conf, RefreshUserMappingsProtocolPB.class, 
+        refreshUserMappingService, clientRpcServer);
+    DFSUtil.addPBProtocol(conf, RefreshCallQueueProtocolPB.class,
+        refreshCallQueueService, clientRpcServer);
+    DFSUtil.addPBProtocol(conf, GenericRefreshProtocolPB.class,
+        genericRefreshService, clientRpcServer);
+    DFSUtil.addPBProtocol(conf, GetUserMappingsProtocolPB.class, 
+        getUserMappingService, clientRpcServer);
+    DFSUtil.addPBProtocol(conf, TraceAdminProtocolPB.class,
+        traceAdminService, clientRpcServer);
+
+    // set service-level authorization security policy
+    if (serviceAuthEnabled =
+          conf.getBoolean(
+            CommonConfigurationKeys.HADOOP_SECURITY_AUTHORIZATION, false)) {
+      clientRpcServer.refreshServiceAcl(conf, new HDFSPolicyProvider());
+      if (serviceRpcServer != null) {
+        serviceRpcServer.refreshServiceAcl(conf, new HDFSPolicyProvider());
+      }
+    }
+
+    // The rpc-server port can be ephemeral... ensure we have the correct info
+    InetSocketAddress listenAddr = clientRpcServer.getListenerAddress();
+      clientRpcAddress = new InetSocketAddress(
+          rpcAddr.getHostName(), listenAddr.getPort());
+    nn.setRpcServerAddress(conf, clientRpcAddress);
+    
+    minimumDataNodeVersion = conf.get(
+        DFSConfigKeys.DFS_NAMENODE_MIN_SUPPORTED_DATANODE_VERSION_KEY,
+        DFSConfigKeys.DFS_NAMENODE_MIN_SUPPORTED_DATANODE_VERSION_DEFAULT);
+
+    // Set terse exception whose stack trace won't be logged
+    this.clientRpcServer.addTerseExceptions(SafeModeException.class,
+        FileNotFoundException.class,
+        HadoopIllegalArgumentException.class,
+        FileAlreadyExistsException.class,
+        InvalidPathException.class,
+        ParentNotDirectoryException.class,
+        UnresolvedLinkException.class,
+        AlreadyBeingCreatedException.class,
+        QuotaExceededException.class,
+        RecoveryInProgressException.class,
+        AccessControlException.class,
+        InvalidToken.class,
+        LeaseExpiredException.class,
+        NSQuotaExceededException.class,
+        DSQuotaExceededException.class,
+        AclException.class,
+        FSLimitException.PathComponentTooLongException.class,
+        FSLimitException.MaxDirectoryItemsExceededException.class,
+        UnresolvedPathException.class);
+ }
+```
+
+##### 获取BlockingService对象
+```java
+ public static com.google.protobuf.BlockingService
+        newReflectiveBlockingService(final BlockingInterface impl) {
+      return new com.google.protobuf.BlockingService() {
+        public final com.google.protobuf.Descriptors.ServiceDescriptor
+            getDescriptorForType() {
+          return getDescriptor();
+        }
+
+        public final com.google.protobuf.Message callBlockingMethod(
+            com.google.protobuf.Descriptors.MethodDescriptor method,
+            com.google.protobuf.RpcController controller,
+            com.google.protobuf.Message request)
+            throws com.google.protobuf.ServiceException {
+          if (method.getService() != getDescriptor()) {
+            throw new java.lang.IllegalArgumentException(
+              "Service.callBlockingMethod() given method descriptor for " +
+              "wrong service type.");
+          }
+          switch(method.getIndex()) {
+            case 0:
+              return impl.getBlockLocations(controller, (org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetBlockLocationsRequestProto)request);
+            case 1:
+              return impl.getServerDefaults(controller, (org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.GetServerDefaultsRequestProto)request);
+            case 2:
+            // ...
+            default:
+            // ...
+            
+            }
+```
+
+
+##### 构造 Server 对象
+
+**NameNodeRpcServer.java**
+
+RPC.Server.build()方法构造Server对象
+
+```java
+  /** The RPC server that listens to requests from DataNodes */
+  private final RPC.Server serviceRpcServer;
+  private final InetSocketAddress serviceRPCAddress;
+  
+  /** The RPC server that listens to requests from clients */
+  protected final RPC.Server clientRpcServer;
+  protected final InetSocketAddress clientRpcAddress;
+
+  this.serviceRpcServer = new RPC.Builder(conf)
+          .setProtocol(
+              org.apache.hadoop.hdfs.protocolPB.ClientNamenodeProtocolPB.class)
+          .setInstance(clientNNPbService)
+          .setBindAddress(bindHost)
+          .setPort(serviceRpcAddr.getPort()).setNumHandlers(serviceHandlerCount)
+          .setVerbose(false)
+          .setSecretManager(namesystem.getDelegationTokenSecretManager())
+          .build();
+          
+   this.clientRpcServer = new RPC.Builder(conf)
+        .setProtocol(
+            org.apache.hadoop.hdfs.protocolPB.ClientNamenodeProtocolPB.class)
+        .setInstance(clientNNPbService).setBindAddress(bindHost)
+        .setPort(rpcAddr.getPort()).setNumHandlers(handlerCount)
+        .setVerbose(false)
+        .setSecretManager(namesystem.getDelegationTokenSecretManager()).build();
+```
+
+**RPC.java**
+```java
+    /**
+     * 构造RPC Server. 
+     */
+    public Server build() throws IOException, HadoopIllegalArgumentException {
+      if (this.conf == null) {
+        throw new HadoopIllegalArgumentException("conf is not set");
+      }
+      if (this.protocol == null) {
+        throw new HadoopIllegalArgumentException("protocol is not set");
+      }
+      if (this.instance == null) {
+        throw new HadoopIllegalArgumentException("instance is not set");
+      }
+      
+      // 通过RpcEngine接口对象的getServer()方法进行分流，在其子类中具体实现
+      return getProtocolEngine(this.protocol, this.conf).getServer(
+          this.protocol, this.instance, this.bindAddress, this.port,
+          this.numHandlers, this.numReaders, this.queueSizePerHandler,
+          this.verbose, this.conf, this.secretManager, this.portRangeConfig);
+    }
+    
+    
+     // Register  protocol and its impl for rpc calls
+    void registerProtocolAndImpl(RpcKind rpcKind, Class<?> protocolClass, 
+       Object protocolImpl) {
+           String protocolName = RPC.getProtocolName(protocolClass);
+           long version;
+     
+
+           try {
+             version = RPC.getProtocolVersion(protocolClass);
+           } catch (Exception ex) {
+             LOG.warn("Protocol "  + protocolClass + 
+                  " NOT registered as cannot get protocol version ");
+             return;
+           }
+
+
+           getProtocolImplMap(rpcKind).put(new ProtoNameVer(protocolName, version),
+               new ProtoClassProtoImpl(protocolClass, protocolImpl)); 
+           LOG.debug("RpcKind = " + rpcKind + " Protocol Name = " + protocolName +  " version=" + version +
+               " ProtocolImpl=" + protocolImpl.getClass().getName() + 
+               " protocolClass=" + protocolClass.getName());
+   }
+```
+
+**ProtobufRpcEngine.java**
+```java
+ public RPC.Server getServer(Class<?> protocol, Object protocolImpl,
+      String bindAddress, int port, int numHandlers, int numReaders,
+      int queueSizePerHandler, boolean verbose, Configuration conf,
+      SecretManager<? extends TokenIdentifier> secretManager,
+      String portRangeConfig)
+      throws IOException {
+    return new Server(protocol, protocolImpl, conf, bindAddress, port,
+        numHandlers, numReaders, queueSizePerHandler, verbose, secretManager,
+        portRangeConfig);
+  }
+  
+  // ...
+  
+  public static class Server extends RPC.Server {
+  
+    public Server(Class<?> protocolClass, Object protocolImpl,
+        Configuration conf, String bindAddress, int port, int numHandlers,
+        int numReaders, int queueSizePerHandler, boolean verbose,
+        SecretManager<? extends TokenIdentifier> secretManager, 
+        String portRangeConfig)
+        throws IOException {
+      super(bindAddress, port, null, numHandlers,
+          numReaders, queueSizePerHandler, conf, classNameBase(protocolImpl
+              .getClass().getName()), secretManager, portRangeConfig);
+      this.verbose = verbose;  
+      
+      // 父类RPC.Server中的方法
+      registerProtocolAndImpl(RPC.RpcKind.RPC_PROTOCOL_BUFFER, protocolClass,
+          protocolImpl);
+    }
+    
+    // ...
+    
+    /** ProtoBufRpcInvoker 是 ProtobufRpcEngine.Server类最重要的实现 */
+    static class ProtoBufRpcInvoker implements RpcInvoker {
+    
+      private static ProtoClassProtoImpl getProtocolImpl(RPC.Server server,
+          String protoName, long clientVersion) throws RpcServerException {
+        ProtoNameVer pv = new ProtoNameVer(protoName, clientVersion);
+        
+        // 从RPC.Server的ProtocolImplMap对象中获取接口信息对应的实现类
+        ProtoClassProtoImpl impl = server.getProtocolImplMap(RPC.RpcKind.RPC_PROTOCOL_BUFFER).get(pv);
+        if (impl == null) { // no match for Protocol AND Version
+          VerProtocolImpl highest = 
+              server.getHighestSupportedProtocol(RPC.RpcKind.RPC_PROTOCOL_BUFFER, 
+                  protoName);
+                 
+          // 如果不存在实现类，则抛出异常
+          if (highest == null) {
+            throw new RpcNoSuchProtocolException(
+                "Unknown protocol: " + protoName);
+          }
+          // 如果RPC版本不匹配，则抛出异常
+          throw new RPC.VersionMismatch(protoName, clientVersion,
+              highest.version);
+        }
+        
+        // 返回实现类
+        return impl;
+      }
+
+      // ProtoBufRpcInvoker.call()方法会响应RPC.Server类解析出网络的RPC请求
+      public Writable call(RPC.Server server, String protocol,
+          Writable writableRequest, long receiveTime) throws Exception {
+        
+        // 获取rpc调用头 
+        RpcRequestWrapper request = (RpcRequestWrapper) writableRequest;
+        RequestHeaderProto rpcRequest = request.requestHeader;
+        
+        // 获取调用的接口名，方法名，版本号
+        String methodName = rpcRequest.getMethodName();
+        String protoName = rpcRequest.getDeclaringClassProtocolName();
+        long clientVersion = rpcRequest.getClientProtocolVersion();
+        if (server.verbose)
+          LOG.info("Call: protocol=" + protocol + ", method=" + methodName);
+        
+        // 获取该接口在Server侧对应的实现类
+        ProtoClassProtoImpl protocolImpl = getProtocolImpl(server, protoName,
+            clientVersion);
+        BlockingService service = (BlockingService) protocolImpl.protocolImpl;
+        MethodDescriptor methodDescriptor = service.getDescriptorForType()
+            .findMethodByName(methodName);
+        if (methodDescriptor == null) {
+          String msg = "Unknown method " + methodName + " called on " + protocol
+              + " protocol.";
+          LOG.warn(msg);
+          throw new RpcNoSuchMethodException(msg);
+        }
+        
+        // 获取调用的方法描述符以及调用参数
+        Message prototype = service.getRequestPrototype(methodDescriptor);
+        Message param = prototype.newBuilderForType()
+            .mergeFrom(request.theRequestRead).build();
+        
+        Message result;
+        long startTime = Time.now();
+        int qTime = (int) (startTime - receiveTime);
+        Exception exception = null;
+        try {
+          server.rpcDetailedMetrics.init(protocolImpl.protocolClass);
+          
+          // 在实现类上调用callBlockingMethod方法，级联适配调用到NameNodeRpcServer
+          result = service.callBlockingMethod(methodDescriptor, null, param);
+        } catch (ServiceException e) {
+          exception = (Exception) e.getCause();
+          throw (Exception) e.getCause();
+        } catch (Exception e) {
+          exception = e;
+          throw e;
+        } finally {
+          int processingTime = (int) (Time.now() - startTime);
+          if (LOG.isDebugEnabled()) {
+            String msg = "Served: " + methodName + " queueTime= " + qTime +
+                " procesingTime= " + processingTime;
+            if (exception != null) {
+              msg += " exception= " + exception.getClass().getSimpleName();
+            }
+            LOG.debug(msg);
+          }
+          String detailedMetricsName = (exception == null) ?
+              methodName :
+              exception.getClass().getSimpleName();
+          server.rpcMetrics.addRpcQueueTime(qTime);
+          server.rpcMetrics.addRpcProcessingTime(processingTime);
+          server.rpcDetailedMetrics.addProcessingTime(detailedMetricsName,
+              processingTime);
+        }
+        return new RpcResponseWrapper(result);
+      }
+    }
+  }
+```
+
+
+**RpcEngine.java**
+
+```java
+public interface RpcEngine {
+
+  /** 构造一个客户端侧的代理对象 */
+  <T> ProtocolProxy<T> getProxy(Class<T> protocol,
+                  long clientVersion, InetSocketAddress addr,
+                  UserGroupInformation ticket, Configuration conf,
+                  SocketFactory factory, int rpcTimeout,
+                  RetryPolicy connectionRetryPolicy) throws IOException;
+
+  <T> ProtocolProxy<T> getProxy(Class<T> protocol,
+                  long clientVersion, InetSocketAddress addr,
+                  UserGroupInformation ticket, Configuration conf,
+                  SocketFactory factory, int rpcTimeout,
+                  RetryPolicy connectionRetryPolicy,
+                  AtomicBoolean fallbackToSimpleAuth) throws IOException;
+
+  /** 构造一个服务端侧的实现类 */
+  
+  RPC.Server getServer(Class<?> protocol, Object instance, String bindAddress,
+                       int port, int numHandlers, int numReaders,
+                       int queueSizePerHandler, boolean verbose,
+                       Configuration conf, 
+                       SecretManager<? extends TokenIdentifier> secretManager,
+                       String portRangeConfig
+                       ) throws IOException;
+
+  ProtocolProxy<ProtocolMetaInfoPB> getProtocolMetaInfoProxy(
+      ConnectionId connId, Configuration conf, SocketFactory factory)
+      throws IOException;
+}
+```
