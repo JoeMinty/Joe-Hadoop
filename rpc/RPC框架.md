@@ -117,13 +117,13 @@
   }
  ```
 
-**Connection构造方法**
+**(1)Connection构造方法**
 ```java
  public Connection(ConnectionId remoteId, int serviceClass)
 ```
 设为守护线程
 
-**setupIOstreams**
+**(2)setupIOstreams**
 - 建立与远程服务的`Socket`连接
 - 向服务器发送连接头
 - 启动Connection线程监听Socket输入流并等待服务器返回RPC响应
@@ -243,5 +243,169 @@
     }
 ```
 
+**(3)发送请求——Connection.sendRpcRequest()**
+
+```java
+    /** 
+     * 向远程服务器发送一次rpc请求调用
+     * 注意此调用并不是由Connection线程调用，而是由发起RPC请求的线程调用的
+     */
+    public void sendRpcRequest(final Call call)
+        throws InterruptedException, IOException {
+      if (shouldCloseConnection.get()) {
+        return;
+      }
+
+      //
+      // Format of a call on the wire:
+      // 0) Length of rest below (1 + 2)
+      // 1) RpcRequestHeader  - is serialized Delimited hence contains length
+      // 2) RpcRequest
+      //
+      // Items '1' and '2' are prepared here. 
+      // 构造RPC请求头
+      final DataOutputBuffer d = new DataOutputBuffer();
+      RpcRequestHeaderProto header = ProtoUtil.makeRpcRequestHeader(
+          call.rpcKind, OperationProto.RPC_FINAL_PACKET, call.id, call.retry,
+          clientId);
+      // 将RPC请求头写入输出流
+      header.writeDelimitedTo(d);
+      // 将RPC请求（包括请求元数据和请求参数）写入输出流、
+      call.rpcRequest.write(d);
+
+      // 这里使用线程池将请求发送出去，请求包括三部分
+      // 1.长度
+      // 2.RPC请求头
+      // 3.RPC请求（包括请求元数据和请求参数）
+      synchronized (sendRpcRequestLock) {
+        Future<?> senderFuture = sendParamsExecutor.submit(new Runnable() {
+          @Override
+          public void run() {
+            try {
+              synchronized (Connection.this.out) {
+                if (shouldCloseConnection.get()) {
+                  return;
+                }
+                
+                if (LOG.isDebugEnabled())
+                  LOG.debug(getName() + " sending #" + call.id);
+         
+                byte[] data = d.getData();
+                int totalLength = d.getLength();
+                out.writeInt(totalLength); // 总长度
+                out.write(data, 0, totalLength);// RpcRequestHeader + RpcRequest
+                out.flush();
+              }
+            } catch (IOException e) {
+              // exception at this point would leave the connection in an
+              // unrecoverable state (eg half a call left on the wire).
+              // So, close the connection, killing any outstanding calls
+              markClosed(e);
+            } finally {
+              //the buffer is just an in-memory buffer, but it is still polite to
+              // close early
+              IOUtils.closeStream(d);
+            }
+          }
+        });
+      
+        // 获取执行结果
+        try {
+          senderFuture.get();
+        } catch (ExecutionException e) {
+          Throwable cause = e.getCause();
+          
+          // cause should only be a RuntimeException as the Runnable above
+          // catches IOException
+          if (cause instanceof RuntimeException) {
+            throw (RuntimeException) cause;
+          } else {
+            throw new RuntimeException("unexpected checked exception", cause);
+          }
+        }
+      }
+    }
+
+```
+
+**（4）接收响应——Connection.run()**
+`Connection`线程负责监听并接收从Server发回的RPC响应
+`Connection.run()`线程入口
+`waitForWork()`等待读取操作
+`receiverRpcResource()`接收RPC响应
+
+```java
+  private void receiveRpcResponse() {
+      // ...
+      
+      try {
+        int totalLen = in.readInt();
+        RpcResponseHeaderProto header = 
+            RpcResponseHeaderProto.parseDelimitedFrom(in);
+        checkResponse(header);
+
+        int headerLen = header.getSerializedSize();
+        headerLen += CodedOutputStream.computeRawVarint32Size(headerLen);
+
+        int callId = header.getCallId();
+        if (LOG.isDebugEnabled())
+          LOG.debug(getName() + " got value #" + callId);
+
+        Call call = calls.get(callId);
+        RpcStatusProto status = header.getStatus();
+        
+        // 如果调用成功，则读取响应消息，在call实例中设置
+        if (status == RpcStatusProto.SUCCESS) {
+          Writable value = ReflectionUtils.newInstance(valueClass, conf);
+          value.readFields(in);                 // read value
+          calls.remove(callId);
+          call.setRpcResponse(value);
+          
+          // verify that length was correct
+          // only for ProtobufEngine where len can be verified easily
+          if (call.getRpcResponse() instanceof ProtobufRpcEngine.RpcWrapper) {
+            ProtobufRpcEngine.RpcWrapper resWrapper = 
+                (ProtobufRpcEngine.RpcWrapper) call.getRpcResponse();
+            if (totalLen != headerLen + resWrapper.getLength()) { 
+              throw new RpcClientException(
+                  "RPC response length mismatch on rpc success");
+            }
+          }
+        } else { // rpc 调用失败
+          // Verify that length was correct
+          if (totalLen != headerLen) {
+            throw new RpcClientException(
+                "RPC response length mismatch on rpc error");
+          }
+          
+          // 取出响应中的异常消息，构造异常，并且在Call对象中设置
+          final String exceptionClassName = header.hasExceptionClassName() ?
+                header.getExceptionClassName() : 
+                  "ServerDidNotSetExceptionClassName";
+          final String errorMsg = header.hasErrorMsg() ? 
+                header.getErrorMsg() : "ServerDidNotSetErrorMsg" ;
+          final RpcErrorCodeProto erCode = 
+                    (header.hasErrorDetail() ? header.getErrorDetail() : null);
+          if (erCode == null) {
+             LOG.warn("Detailed error code not set by server on rpc error");
+          }
+          RemoteException re = 
+              ( (erCode == null) ? 
+                  new RemoteException(exceptionClassName, errorMsg) :
+              new RemoteException(exceptionClassName, errorMsg, erCode));
+          if (status == RpcStatusProto.ERROR) {
+            calls.remove(callId);
+            call.setException(re);
+          } else if (status == RpcStatusProto.FATAL) {
+            // Close the connection
+            markClosed(re);
+          }
+        }
+      } catch (IOException e) {
+        markClosed(e);
+      }
+    }
+
+```
 
 ## Server类
